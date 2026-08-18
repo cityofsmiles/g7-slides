@@ -41,6 +41,15 @@
   .brand h1 span{color:var(--chalk);}
   .brand small{font-family:var(--mono); color:var(--paper-dim); font-size:11px;}
 
+  #termTabs{display:flex; gap:6px; margin-bottom:16px;}
+  .term-tab{
+    flex:1; text-align:center; font-family:var(--mono); font-size:12px; letter-spacing:0.03em;
+    background:var(--ink-2); border:1px solid var(--ink-3); color:var(--paper-dim);
+    padding:9px 6px; border-radius:7px; cursor:pointer;
+  }
+  .term-tab.active{border-color:var(--chalk-dim); color:var(--chalk); background:var(--ink-3);}
+  .term-tab.failed{color:var(--danger); opacity:0.6;}
+
   #search{
     width:100%; background:var(--ink-2); border:1px solid var(--ink-3); color:var(--paper);
     padding:12px 14px; border-radius:8px; font-size:15px; margin-bottom:18px; font-family:var(--sans);
@@ -170,6 +179,7 @@
       <h1>Grade 7 <span>Math Lessons</span></h1>
       <small id="count-badge"></small>
     </div>
+    <div id="termTabs"></div>
     <input id="search" type="text" placeholder="Search lessons…" autocomplete="off">
     <div id="status">Loading lesson list…</div>
     <ul id="list"></ul>
@@ -208,9 +218,9 @@
   'use strict';
 
   // ---------------- CONFIG ----------------
-  // Edit these if you reuse this file for a different sheet or tab.
+  // Edit these if you reuse this file for a different sheet or set of tabs.
   const SHEET_ID  = '1zyJdhXju9l226Pl28LasOpXfbz83VfofkcBgxoK7bjM';
-  const SHEET_GID = 0;        // first tab; change if lessons live on another tab
+  const TERMS = ['Term1', 'Term2', 'Term3'];  // must match your sheet tab names exactly
   const MAX_SLIDES_TO_PROBE = 80;  // safety ceiling per lesson
   const HUD_HIDE_DELAY = 2600;     // ms of inactivity before HUD fades in viewer
 
@@ -221,15 +231,20 @@
   const ENABLE_REMOTE = true;
   // -----------------------------------------
 
-  const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
+  function csvUrlForTerm(term){
+    return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(term)}`;
+  }
 
   const el = (id) => document.getElementById(id);
   const statusEl = el('status'), listEl = el('list'), searchEl = el('search'), countBadge = el('count-badge');
+  const termTabsEl = el('termTabs');
   const viewer = el('viewer'), library = el('library'), slideImg = el('slideImg');
   const hud = el('hud'), hudTitle = el('hudTitle'), curNum = el('curNum'), totalNum = el('totalNum');
   const loadingEl = el('loading'), emptyEl = el('viewerEmpty'), emptyDetail = el('viewerEmptyDetail');
 
-  let lessons = [];          // {number, title, folderPath}
+  let lessons = [];          // all terms combined: {term, number, title, folderPath}
+  let termStatus = {};        // term -> 'ok' | 'failed'
+  let activeTerm = TERMS[0];
   let slideCache = {};        // folderPath -> [urls]
   let current = { urls: [], index: 0, title: '' };
   let hudTimer = null;
@@ -303,21 +318,47 @@
   }
 
   // ---------- Library rendering ----------
+  function renderTabs(){
+    termTabsEl.innerHTML = '';
+    TERMS.forEach(term => {
+      const btn = document.createElement('div');
+      btn.className = 'term-tab' + (term === activeTerm ? ' active' : '') + (termStatus[term] === 'failed' ? ' failed' : '');
+      btn.textContent = term;
+      btn.addEventListener('click', () => {
+        if (term === activeTerm) return;
+        activeTerm = term;
+        searchEl.value = '';
+        renderTabs();
+        renderList();
+      });
+      termTabsEl.appendChild(btn);
+    });
+  }
+
+  function visibleLessons(){
+    return lessons.filter(l => l.term === activeTerm);
+  }
+
   function renderList(){
     listEl.innerHTML = '';
-    if (!lessons.length){
-      listEl.innerHTML = '<li class="empty">No lessons found in the sheet.</li>';
+    const termLessons = visibleLessons();
+    if (!termLessons.length){
+      const msg = termStatus[activeTerm] === 'failed'
+        ? `Couldn't load the "${activeTerm}" tab.`
+        : `No lessons found in "${activeTerm}".`;
+      listEl.innerHTML = `<li class="empty">${msg}</li>`;
+      countBadge.textContent = '';
       return;
     }
-    lessons.forEach((lesson, i) => {
+    termLessons.forEach((lesson) => {
       const li = document.createElement('li');
       li.className = 'row';
-      li.dataset.idx = i;
       li.innerHTML = `<span class="num">${lesson.number || '—'}</span><span class="title">${escapeHtml(lesson.title)}</span><span class="go">›</span>`;
-      li.addEventListener('click', () => openLesson(i));
+      li.addEventListener('click', () => openLessonData(lesson));
       listEl.appendChild(li);
     });
-    countBadge.textContent = `${lessons.length} lesson${lessons.length === 1 ? '' : 's'}`;
+    countBadge.textContent = `${termLessons.length} lesson${termLessons.length === 1 ? '' : 's'}`;
+    filterList(searchEl.value);
   }
 
   function escapeHtml(s){
@@ -328,9 +369,10 @@
 
   function filterList(q){
     q = q.trim().toLowerCase();
-    document.querySelectorAll('#list .row').forEach(row => {
-      const idx = row.dataset.idx;
-      const lesson = lessons[idx];
+    const termLessons = visibleLessons();
+    document.querySelectorAll('#list .row').forEach((row, i) => {
+      const lesson = termLessons[i];
+      if (!lesson) return;
       const match = !q || lesson.title.toLowerCase().includes(q) || lesson.number.includes(q);
       row.classList.toggle('hidden', !match);
     });
@@ -342,32 +384,48 @@
   async function loadSheet(){
     statusEl.textContent = 'Loading lesson list…';
     statusEl.className = '';
-    try {
-      const res = await fetch(csvUrl);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      const rows = parseCSV(text);
-      if (!rows.length) throw new Error('empty sheet');
-      // Skip header row (row 0)
-      const dataRows = rows.slice(1);
-      lessons = dataRows
-        .map(r => ({ title: (r[0] || '').trim(), folderPath: (r[1] || '').trim() }))
-        .filter(l => l.title && l.folderPath)
-        .map(l => ({ ...l, number: extractLessonNumber(l.title, l.folderPath) }));
-      statusEl.textContent = '';
-      renderList();
-    } catch (err) {
+    renderTabs();
+
+    const results = await Promise.all(TERMS.map(async (term) => {
+      try {
+        const res = await fetch(csvUrlForTerm(term));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        const rows = parseCSV(text);
+        if (!rows.length) throw new Error('empty');
+        const dataRows = rows.slice(1); // skip header
+        const termLessons = dataRows
+          .map(r => ({ title: (r[0] || '').trim(), folderPath: (r[1] || '').trim() }))
+          .filter(l => l.title && l.folderPath)
+          .map(l => ({ ...l, term, number: extractLessonNumber(l.title, l.folderPath) }));
+        termStatus[term] = 'ok';
+        return termLessons;
+      } catch (err) {
+        termStatus[term] = 'failed';
+        return [];
+      }
+    }));
+
+    lessons = results.flat();
+    const anyFailed = TERMS.some(t => termStatus[t] === 'failed');
+    const anyOk = TERMS.some(t => termStatus[t] === 'ok');
+
+    if (!anyOk){
       statusEl.className = 'err';
-      statusEl.innerHTML = `Couldn't load the sheet (${err.message}). Make sure it's shared as "Anyone with the link can view." <button id="retryBtn">Retry</button>`;
+      statusEl.innerHTML = `Couldn't load any lesson tabs. Make sure the sheet is shared as "Anyone with the link can view" and that tab names match ${TERMS.join(', ')}. <button id="retryBtn">Retry</button>`;
       el('retryBtn').addEventListener('click', loadSheet);
+      renderTabs();
+      renderList();
+      return;
     }
+
+    statusEl.textContent = anyFailed ? `Some tabs failed to load (marked in red above).` : '';
+    statusEl.className = anyFailed ? 'err' : '';
+    renderTabs();
+    renderList();
   }
 
   // ---------- Viewer ----------
-  function openLesson(idx){
-    return openLessonData(lessons[idx]);
-  }
-
   async function openLessonData(lesson){
     if (!lesson || !lesson.folderPath) return;
     current.title = lesson.title;

@@ -99,6 +99,13 @@
     border:2px solid var(--line); background:var(--paper); padding:7px 10px;
   }
   #ovClose:active{background:var(--line); color:var(--paper);}
+  #ovTermTabs{display:flex; gap:6px; padding:0 12px 10px; border-bottom:2px solid var(--line);}
+  .ov-term-tab{
+    flex:1; text-align:center; font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    border:2px solid var(--line); background:var(--paper); color:var(--line); padding:8px 4px;
+  }
+  .ov-term-tab.active{background:var(--line); color:var(--paper);}
+  .ov-term-tab.failed{color:var(--dim); border-color:var(--dim);}
   #ovSearch{
     flex:1; border:2px solid var(--line); padding:8px 10px; font-size:14px;
     font-family:var(--sans); background:var(--paper); color:var(--line);
@@ -148,6 +155,7 @@
     <button id="ovClose">Close</button>
     <input id="ovSearch" type="text" placeholder="Search lessons…" autocomplete="off">
   </div>
+  <div id="ovTermTabs"></div>
   <div id="ovStatus">Loading lesson list…</div>
   <ul id="ovList"></ul>
 </div>
@@ -168,22 +176,27 @@
 
   // ---------------- CONFIG ----------------
   const SHEET_ID  = '1zyJdhXju9l226Pl28LasOpXfbz83VfofkcBgxoK7bjM';
-  const SHEET_GID = 0;
+  const TERMS = ['Term1', 'Term2', 'Term3'];  // must match your sheet tab names exactly
 
   // Must match REMOTE_TOPIC in slide-viewer.html exactly.
   const REMOTE_TOPIC = 'kasamath-g7-slides-9f3k2';
   const MAX_SLIDES_TO_PROBE = 80;
   // -----------------------------------------
 
-  const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
+  function csvUrlForTerm(term){
+    return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(term)}`;
+  }
   const el = (id) => document.getElementById(id);
 
   const nowPlaying = el('nowPlaying'), slidePos = el('slidePos'), sentFlag = el('sentFlag');
   const zonePrev = el('zonePrev'), zoneNext = el('zoneNext');
   const overlay = el('overlay'), ovList = el('ovList'), ovStatus = el('ovStatus'), ovSearch = el('ovSearch');
+  const ovTermTabsEl = el('ovTermTabs');
   const gotoOverlay = el('gotoOverlay'), gotoInput = el('gotoInput'), gotoHint = el('gotoHint');
 
-  let lessons = [];
+  let lessons = [];           // all terms combined
+  let termStatus = {};         // term -> 'ok' | 'failed'
+  let activeTerm = TERMS[0];
   let session = { title: '', folderPath: '', total: 0, index: 0 }; // index is 0-based
 
   // ---------- CSV parsing (same approach as slide-viewer.html) ----------
@@ -246,25 +259,63 @@
   // ---------- Sheet ----------
   async function loadSheet(){
     ovStatus.textContent = 'Loading lesson list…';
-    try {
-      const res = await fetch(csvUrl);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      const rows = parseCSV(text).slice(1);
-      lessons = rows
-        .map(r => ({ title: (r[0] || '').trim(), folderPath: (r[1] || '').trim() }))
-        .filter(l => l.title && l.folderPath)
-        .map(l => ({ ...l, number: extractLessonNumber(l.title, l.folderPath) }));
-      ovStatus.textContent = '';
-      renderLessonList();
-    } catch (err) {
-      ovStatus.textContent = `Couldn't load the sheet (${err.message}). Check sharing is set to "Anyone with the link."`;
-    }
+    renderTermTabs();
+
+    const results = await Promise.all(TERMS.map(async (term) => {
+      try {
+        const res = await fetch(csvUrlForTerm(term));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const text = await res.text();
+        const rows = parseCSV(text).slice(1);
+        const termLessons = rows
+          .map(r => ({ title: (r[0] || '').trim(), folderPath: (r[1] || '').trim() }))
+          .filter(l => l.title && l.folderPath)
+          .map(l => ({ ...l, term, number: extractLessonNumber(l.title, l.folderPath) }));
+        termStatus[term] = 'ok';
+        return termLessons;
+      } catch (err) {
+        termStatus[term] = 'failed';
+        return [];
+      }
+    }));
+
+    lessons = results.flat();
+    const anyOk = TERMS.some(t => termStatus[t] === 'ok');
+    ovStatus.textContent = anyOk ? '' : `Couldn't load any lesson tabs. Check sharing is set to "Anyone with the link."`;
+    renderTermTabs();
+    renderLessonList();
+  }
+
+  function renderTermTabs(){
+    ovTermTabsEl.innerHTML = '';
+    TERMS.forEach(term => {
+      const btn = document.createElement('div');
+      btn.className = 'ov-term-tab' + (term === activeTerm ? ' active' : '') + (termStatus[term] === 'failed' ? ' failed' : '');
+      btn.textContent = term;
+      btn.addEventListener('click', () => {
+        if (term === activeTerm) return;
+        activeTerm = term;
+        ovSearch.value = '';
+        renderTermTabs();
+        renderLessonList();
+      });
+      ovTermTabsEl.appendChild(btn);
+    });
+  }
+
+  function visibleLessons(){
+    return lessons.filter(l => l.term === activeTerm);
   }
 
   function renderLessonList(){
     ovList.innerHTML = '';
-    lessons.forEach((lesson) => {
+    const termLessons = visibleLessons();
+    if (!termLessons.length){
+      const msg = termStatus[activeTerm] === 'failed' ? `Couldn't load "${activeTerm}".` : `No lessons in "${activeTerm}".`;
+      ovList.innerHTML = `<li class="empty">${msg}</li>`;
+      return;
+    }
+    termLessons.forEach((lesson) => {
       const li = document.createElement('li');
       li.innerHTML = `<span class="num">${lesson.number || '—'}</span><span class="t">${escapeHtml(lesson.title)}</span>`;
       li.addEventListener('click', () => selectLesson(lesson));
@@ -280,8 +331,10 @@
 
   ovSearch.addEventListener('input', () => {
     const q = ovSearch.value.trim().toLowerCase();
+    const termLessons = visibleLessons();
     Array.from(ovList.children).forEach((li, i) => {
-      const lesson = lessons[i];
+      const lesson = termLessons[i];
+      if (!lesson) return;
       const match = !q || lesson.title.toLowerCase().includes(q) || lesson.number.includes(q);
       li.classList.toggle('hidden', !match);
     });
