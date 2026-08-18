@@ -30,11 +30,11 @@
     font-family:var(--serif); font-size:14px; flex:1; text-align:center;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 8px;
   }
-  #openLessons{
+  #openLessons, #gotoBtn{
     font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
     border:2px solid var(--line); background:var(--paper); padding:7px 10px; flex-shrink:0;
   }
-  #openLessons:active{background:var(--line); color:var(--paper);}
+  #openLessons:active, #gotoBtn:active{background:var(--line); color:var(--paper);}
 
   /* ---------- Page-turn zones (mirrors Kindle's own tap-to-turn) ---------- */
   #pad{flex:1; display:flex; flex-direction:column;}
@@ -59,9 +59,30 @@
     padding:8px 12px; border-top:2px solid var(--line); flex-shrink:0;
     font-family:var(--mono); font-size:11px; color:var(--dim);
   }
+  #slidePos{background:none; border:none; padding:0; color:var(--dim); font-family:var(--mono); font-size:11px;}
   #slidePos b{color:var(--line);}
+  #slidePos.tappable{text-decoration:underline; -webkit-text-decoration-line:underline;}
   #sentFlag{opacity:0;}
   #sentFlag.show{opacity:1;}
+
+  /* ---------- Go-to-page overlay ---------- */
+  #gotoOverlay{
+    position:fixed; inset:0; background:var(--paper); z-index:25; display:none;
+    flex-direction:column; align-items:center; justify-content:center; gap:18px; padding:24px;
+  }
+  #gotoOverlay.active{display:flex;}
+  #gotoLabel{font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--dim);}
+  #gotoInput{
+    width:100%; max-width:220px; border:2px solid var(--line); background:var(--paper); color:var(--line);
+    font-family:var(--serif); font-size:15vh; line-height:1; text-align:center; padding:8px 0;
+  }
+  #gotoRow{display:flex; gap:10px; width:100%; max-width:280px;}
+  #gotoGo, #gotoCancel{
+    flex:1; font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:0.06em;
+    border:2px solid var(--line); background:var(--paper); padding:12px 0;
+  }
+  #gotoGo:active, #gotoCancel:active{background:var(--line); color:var(--paper);}
+  #gotoHint{font-family:var(--mono); font-size:11px; color:var(--dim);}
 
   /* ---------- Lesson picker overlay ---------- */
   #overlay{
@@ -101,6 +122,7 @@
   <div id="bar">
     <span class="label">Remote</span>
     <div id="nowPlaying">No lesson selected</div>
+    <button id="gotoBtn">Page</button>
     <button id="openLessons">Lessons</button>
   </div>
 
@@ -130,6 +152,16 @@
   <ul id="ovList"></ul>
 </div>
 
+<div id="gotoOverlay">
+  <div id="gotoLabel">Go to slide</div>
+  <input id="gotoInput" type="number" inputmode="numeric" min="1" placeholder="—">
+  <div id="gotoHint"></div>
+  <div id="gotoRow">
+    <button id="gotoCancel">Cancel</button>
+    <button id="gotoGo">Go</button>
+  </div>
+</div>
+
 <script>
 (function(){
   'use strict';
@@ -149,6 +181,7 @@
   const nowPlaying = el('nowPlaying'), slidePos = el('slidePos'), sentFlag = el('sentFlag');
   const zonePrev = el('zonePrev'), zoneNext = el('zoneNext');
   const overlay = el('overlay'), ovList = el('ovList'), ovStatus = el('ovStatus'), ovSearch = el('ovSearch');
+  const gotoOverlay = el('gotoOverlay'), gotoInput = el('gotoInput'), gotoHint = el('gotoHint');
 
   let lessons = [];
   let session = { title: '', folderPath: '', total: 0, index: 0 }; // index is 0-based
@@ -281,11 +314,43 @@
     const cur = session.total ? session.index + 1 : '—';
     const tot = session.total || '—';
     slidePos.innerHTML = `Slide <b>${cur}</b> / ${tot}`;
+    slidePos.classList.toggle('tappable', !!session.folderPath);
   }
 
   function setZonesEnabled(prevOn, nextOn){
     zonePrev.classList.toggle('disabled', !prevOn);
     zoneNext.classList.toggle('disabled', !nextOn);
+  }
+
+  // ---------- Go to page ----------
+  function openGoto(){
+    if (!session.folderPath) return;
+    gotoHint.textContent = session.total ? `1 – ${session.total}` : 'slide count unknown yet';
+    gotoInput.value = session.total ? String(session.index + 1) : '';
+    gotoOverlay.classList.add('active');
+    setTimeout(() => gotoInput.focus(), 50);
+  }
+
+  function closeGoto(){
+    gotoOverlay.classList.remove('active');
+  }
+
+  function confirmGoto(){
+    let n = parseInt(gotoInput.value, 10);
+    if (!n || isNaN(n)) { closeGoto(); return; }
+    if (session.total) n = Math.max(1, Math.min(session.total, n));
+    else n = Math.max(1, n);
+    session.index = n - 1;
+    updatePosLabel();
+    setZonesEnabled(session.index > 0, !session.total || session.index < session.total - 1);
+    send({ action: 'goto', index: session.index });
+    flashSent();
+    closeGoto();
+  }
+
+  function flashSent(){
+    sentFlag.classList.add('show');
+    setTimeout(() => sentFlag.classList.remove('show'), 700);
   }
 
   // ---------- Navigation ----------
@@ -320,8 +385,7 @@
       method: 'POST',
       body: JSON.stringify(cmd)
     }).then(() => {
-      sentFlag.classList.add('show');
-      setTimeout(() => sentFlag.classList.remove('show'), 700);
+      flashSent();
     }).catch(() => { /* Kindle wifi hiccup — user can just tap again */ });
   }
 
@@ -330,6 +394,11 @@
   zoneNext.addEventListener('click', goNext);
   el('openLessons').addEventListener('click', () => overlay.classList.add('active'));
   el('ovClose').addEventListener('click', () => overlay.classList.remove('active'));
+  el('gotoBtn').addEventListener('click', openGoto);
+  slidePos.addEventListener('click', openGoto);
+  el('gotoCancel').addEventListener('click', closeGoto);
+  el('gotoGo').addEventListener('click', confirmGoto);
+  gotoInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmGoto(); });
 
   loadSheet();
 })();
