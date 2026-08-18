@@ -123,6 +123,13 @@
   #counter{font-family:var(--mono); font-size:13px; color:var(--paper-dim); letter-spacing:0.02em;}
   #counter b{color:var(--chalk); font-weight:600;}
 
+  #remoteDot{
+    width:8px; height:8px; border-radius:50%; background:var(--ink-3);
+    flex-shrink:0; margin-right:2px;
+  }
+  #remoteDot.connected{background:var(--slate);}
+  #remoteDot.error{background:var(--danger);}
+
   #loading{
     position:absolute; inset:0; z-index:15; display:none;
     align-items:center; justify-content:center; flex-direction:column; gap:10px;
@@ -185,6 +192,7 @@
       <div class="hud-top">
         <button class="hud-btn" id="btnClose" aria-label="Close">✕</button>
         <div class="lesson-title" id="hudTitle"></div>
+        <span id="remoteDot" title="Kindle remote connection"></span>
         <button class="hud-btn" id="btnFullscreen" aria-label="Fullscreen">⛶</button>
       </div>
       <div class="hud-bottom">
@@ -205,6 +213,12 @@
   const SHEET_GID = 0;        // first tab; change if lessons live on another tab
   const MAX_SLIDES_TO_PROBE = 80;  // safety ceiling per lesson
   const HUD_HIDE_DELAY = 2600;     // ms of inactivity before HUD fades in viewer
+
+  // Remote control (Kindle) — must match REMOTE_TOPIC in kindle-remote.html exactly.
+  // ntfy.sh topics are unauthenticated and public if guessed, so pick something
+  // obscure rather than leaving the default.
+  const REMOTE_TOPIC = 'kasamath-g7-slides-9f3k2';
+  const ENABLE_REMOTE = true;
   // -----------------------------------------
 
   const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
@@ -350,8 +364,12 @@
   }
 
   // ---------- Viewer ----------
-  async function openLesson(idx){
-    const lesson = lessons[idx];
+  function openLesson(idx){
+    return openLessonData(lessons[idx]);
+  }
+
+  async function openLessonData(lesson){
+    if (!lesson || !lesson.folderPath) return;
     current.title = lesson.title;
     hudTitle.textContent = lesson.title;
     viewer.classList.add('active');
@@ -461,7 +479,57 @@
     touchStartX = null; touchStartY = null;
   }, { passive: true });
 
+  // ---------- Kindle remote (ntfy.sh) ----------
+  const remoteDot = el('remoteDot');
+
+  function setupRemote(){
+    if (!ENABLE_REMOTE || !REMOTE_TOPIC) return;
+    let es;
+    function connect(){
+      try {
+        es = new EventSource(`https://ntfy.sh/${REMOTE_TOPIC}/sse`);
+      } catch (e) {
+        remoteDot.className = 'error';
+        return;
+      }
+      es.onopen = () => { remoteDot.className = 'connected'; };
+      es.onerror = () => { remoteDot.className = 'error'; };
+      es.onmessage = (e) => {
+        let payload;
+        try { payload = JSON.parse(e.data); } catch (err) { return; }
+        if (!payload || !payload.message) return;
+        let cmd;
+        try { cmd = JSON.parse(payload.message); } catch (err) { return; }
+        handleRemoteCommand(cmd);
+      };
+    }
+    connect();
+  }
+
+  function handleRemoteCommand(cmd){
+    if (!cmd || !cmd.action) return;
+    switch (cmd.action){
+      case 'open':
+        openLessonData({ title: cmd.title || '', folderPath: cmd.folderPath || '' });
+        break;
+      case 'next':
+        nextSlide();
+        break;
+      case 'prev':
+        prevSlide();
+        break;
+      case 'goto':
+        if (typeof cmd.index === 'number') showSlide(cmd.index);
+        wakeHud();
+        break;
+      case 'close':
+        closeViewer();
+        break;
+    }
+  }
+
   loadSheet();
+  setupRemote();
 })();
 </script>
 </body>
