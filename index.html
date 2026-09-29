@@ -348,7 +348,7 @@
   function probeSlides(folderPath, onProgress){
     let entry = slideCache[folderPath];
     if (entry){
-      if (onProgress) entry.listeners.push(onProgress);
+      if (onProgress && !entry.done) entry.listeners.push(onProgress);
       return entry.first;
     }
     const base = githubTreeToRawBase(folderPath);
