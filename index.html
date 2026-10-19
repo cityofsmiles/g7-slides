@@ -359,7 +359,7 @@
     if (!base) return Promise.reject(new Error('not-a-github-tree-url'));
 
     entry = slideCache[folderPath] = { urls: [], done: false, listeners: onProgress ? [onProgress] : [] };
-    const urlFor = n => `${base}slide-${String(n).padStart(2, '0')}.png`;
+    const urlFor = n => `${base}slide-${String(n).padStart(2, '0')}.webp`;
 
     entry.first = (async () => {
       try { await loadImage(urlFor(1)); entry.urls.push(urlFor(1)); }
